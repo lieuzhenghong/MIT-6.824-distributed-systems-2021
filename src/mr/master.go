@@ -199,7 +199,7 @@ func (m *Master) ReceiveFileLocations(args *FileLocationArgs, reply *AckReply) e
 
 // GetNewTask ...
 // RPC to be called by worker nodes.
-func (m *Master) GetNewTask(args *ExampleArgs, reply *JobReply) error {
+func (m *Master) GetNewTask(args *NewJobArgs, reply *JobReply) error {
 	// When I receive a new task request,
 
 	// First check if all jobs have completed. If so, send an exit job.
@@ -236,16 +236,6 @@ func (m *Master) GetNewTask(args *ExampleArgs, reply *JobReply) error {
 	}
 	// Otherwise, give the worker a null task
 	AssignNullJobToWorker(reply)
-	return nil
-}
-
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
 	return nil
 }
 
