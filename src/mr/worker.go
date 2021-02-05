@@ -162,7 +162,7 @@ func PerformMap(mapf func(string, string) []KeyValue, reply JobReply) {
 // CallGetNewTask ...
 // Remote RPC call to the master to ask the master for a new job.
 func CallGetNewTask() JobReply {
-	args := ExampleArgs{}
+	args := NewJobArgs{}
 	reply := JobReply{}
 	call("Master.GetNewTask", &args, &reply)
 	return reply
@@ -178,29 +178,6 @@ func CallReturnFileLocations(index int, fileLocations []string) {
 	args.MapFileLocations = fileLocations
 	reply := AckReply{}
 	call("Master.ReceiveFileLocations", &args, &reply)
-}
-
-// CallExample ...
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply typNs are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Coordinator.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 
 //
