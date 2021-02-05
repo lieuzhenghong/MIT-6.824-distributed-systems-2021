@@ -119,6 +119,9 @@ func StartTenSecondTimeout(i int, jobType string, m *Master) {
 	log.Fatal("StartTimeSecondTimeout function received an unknown jobType")
 }
 
+// GrabAllFileNamesForReduceJobI ...
+// For Reduce worker i, get all filenames in the i-th index
+// of each []FileLocation in m.MapFileLocations
 func GrabAllFileNamesForReduceJobI(i int, m *Master) []string {
 	// NOTE you cannot lock here because that will give you a deadlock
 	filenames := make([]string, 0)
@@ -130,9 +133,16 @@ func GrabAllFileNamesForReduceJobI(i int, m *Master) []string {
 	return filenames
 }
 
+// AssignMapJobToWorker ...
+// Assign idle map task to worker
+// Send a reply with JobType "map",
+// index i,
+// R r, (number of reduce workers)
+// and filelocation InputFileLocations[i]
+// Then starts a new ten-second timeout thread
+// that monitors whether the task has been complete
+// or has been timed out.
 func AssignMapJobToWorker(i int, reply *JobReply, m *Master) error {
-	// Assign idle map task to worker
-	// Send the filelocations[index]
 	reply.JobType = "map" // "map", "reduce", "null", "exit"
 	reply.Index = i
 	m.mu.Lock()
@@ -145,6 +155,15 @@ func AssignMapJobToWorker(i int, reply *JobReply, m *Master) error {
 	return nil
 }
 
+// AssignReduceJobToWorker ...
+// Assign idle reduce task to worker
+// Send a reply with JobType "reduce",
+// index i,
+// N n, (number of map workers) (YAGNI tho!!)
+// and locations of the files to reduce.
+// Then starts a new ten-second timeout thread
+// that monitors whether the task has been complete
+// or has been timed out.
 func AssignReduceJobToWorker(i int, reply *JobReply, m *Master) error {
 	reply.JobType = "reduce" // "map", "reduce", "null", "exit"
 	reply.Index = i
@@ -165,11 +184,19 @@ func AssignReduceJobToWorker(i int, reply *JobReply, m *Master) error {
 	return nil
 }
 
+// AssignNullJobToWorker ...
+// Assigns a "null" job to the worker.
+// This is to tell the worker that there are no jobs
+// available at this time. The worker should ask again later.
 func AssignNullJobToWorker(reply *JobReply) error {
 	reply.JobType = "null"
 	return nil
 }
 
+// AssignExitJobToWorker ...
+// Assigns an "exit" job to the worker.
+// This lets the worker know that all jobs have been completed
+// and it should now exit.
 func AssignExitJobToWorker(reply *JobReply) error {
 	reply.JobType = "exit"
 	return nil
@@ -255,8 +282,8 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-//
-// main/mrcoordinator.go calls Done() periodically to find out
+// Done ...
+// main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
