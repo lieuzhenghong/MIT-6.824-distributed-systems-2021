@@ -6,24 +6,48 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
-
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
+import (
+	"os"
+	"strconv"
+)
 
 // Add your RPC definitions here.
 
+// NewJobArgs ...
+// Does nothing for now
+type NewJobArgs struct {
+	Nothing int
+}
+
+// JobReply ...
+// Reply given from the server
+// when workers ask it for a new job.
+// JobType is the most important and must not be nil.
+// Other fields are optional.
+// JobType can be any of "map", "reduce", "null", "exit".
+type JobReply struct {
+	JobType           string
+	Index             int  // index of map/reduce worker
+	R                 uint // number of reduce workers
+	N                 uint // number of map workers (not used)
+	InputFileLocation string
+	MapFileLocations  []string
+}
+
+// FileLocationArgs ...
+// Given by a Map worker when it completes.
+// Lists the locations of intermediate files it produced.
+type FileLocationArgs struct {
+	Index            int
+	MapFileLocations []string
+}
+
+// AckReply ...
+// Reply to the FileLocationArgs
+// Not really used.
+type AckReply struct {
+	Received bool
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
