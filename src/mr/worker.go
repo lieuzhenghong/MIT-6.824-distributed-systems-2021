@@ -164,7 +164,7 @@ func PerformMap(mapf func(string, string) []KeyValue, reply JobReply) {
 func CallGetNewTask() JobReply {
 	args := NewJobArgs{}
 	reply := JobReply{}
-	call("Master.GetNewTask", &args, &reply)
+	call("Coordinator.GetNewTask", &args, &reply)
 	return reply
 }
 
@@ -177,7 +177,7 @@ func CallReturnFileLocations(index int, fileLocations []string) {
 	args.Index = index
 	args.MapFileLocations = fileLocations
 	reply := AckReply{}
-	call("Master.ReceiveFileLocations", &args, &reply)
+	call("Coordinator.ReceiveFileLocations", &args, &reply)
 }
 
 //

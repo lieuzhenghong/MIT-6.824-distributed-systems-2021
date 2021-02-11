@@ -17,10 +17,10 @@ type TaskStatus struct {
 	Status uint8
 }
 
-// Master ...
+// Coordinator ...
 // Contains MapTasksStatus, MapFileLocations, and ReduceTasksStatus.
 // MapTasksStatus is a slice where...
-type Master struct {
+type Coordinator struct {
 	// Your definitions here.
 	N                  uint // number of map tasks
 	R                  uint // number of reduce tasks
@@ -31,7 +31,7 @@ type Master struct {
 	mu                 sync.Mutex
 }
 
-func (m *Master) bAllMapJobsComplete() bool {
+func (m *Coordinator) bAllMapJobsComplete() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := 0; i < len(m.MapTasksStatus); i++ {
@@ -44,7 +44,7 @@ func (m *Master) bAllMapJobsComplete() bool {
 	return true
 }
 
-func (m *Master) bAllReduceJobsComplete() bool {
+func (m *Coordinator) bAllReduceJobsComplete() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := 0; i < len(m.ReduceTasksStatus); i++ {
@@ -64,7 +64,7 @@ func (m *Master) bAllReduceJobsComplete() bool {
 	return true
 }
 
-func (m *Master) bAllJobsComplete() bool {
+func (m *Coordinator) bAllJobsComplete() bool {
 	// Returns true if and only if all jobs have completed
 	// println("Checking if all jobs are complete...")
 	return m.bAllMapJobsComplete() && m.bAllReduceJobsComplete()
@@ -74,7 +74,7 @@ func (m *Master) bAllJobsComplete() bool {
 // Finds the first idle task of a TaskStatus slice.
 // Returns the smallest index of the first idle map task.
 // Returns -1 if no idle tasks exist.
-func FindFirstIdleTask(taskstatusslice *[]TaskStatus, m *Master) int {
+func FindFirstIdleTask(taskstatusslice *[]TaskStatus, m *Coordinator) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i := 0; i < len(*taskstatusslice); i++ {
@@ -92,7 +92,7 @@ func FindFirstIdleTask(taskstatusslice *[]TaskStatus, m *Master) int {
 // while for reduce tasks we must look for the filename mr-out-Y.
 // If it has, mark job as completed;
 // otherwise, mark job as idle again.
-func StartTenSecondTimeout(i int, jobType string, m *Master) {
+func StartTenSecondTimeout(i int, jobType string, m *Coordinator) {
 	time.Sleep(10 * time.Second)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -122,7 +122,7 @@ func StartTenSecondTimeout(i int, jobType string, m *Master) {
 // GrabAllFileNamesForReduceJobI ...
 // For Reduce worker i, get all filenames in the i-th index
 // of each []FileLocation in m.MapFileLocations
-func GrabAllFileNamesForReduceJobI(i int, m *Master) []string {
+func GrabAllFileNamesForReduceJobI(i int, m *Coordinator) []string {
 	// NOTE you cannot lock here because that will give you a deadlock
 	filenames := make([]string, 0)
 	// Look for filenames with i int
@@ -142,7 +142,7 @@ func GrabAllFileNamesForReduceJobI(i int, m *Master) []string {
 // Then starts a new ten-second timeout thread
 // that monitors whether the task has been complete
 // or has been timed out.
-func AssignMapJobToWorker(i int, reply *JobReply, m *Master) error {
+func AssignMapJobToWorker(i int, reply *JobReply, m *Coordinator) error {
 	reply.JobType = "map" // "map", "reduce", "null", "exit"
 	reply.Index = i
 	m.mu.Lock()
@@ -164,7 +164,7 @@ func AssignMapJobToWorker(i int, reply *JobReply, m *Master) error {
 // Then starts a new ten-second timeout thread
 // that monitors whether the task has been complete
 // or has been timed out.
-func AssignReduceJobToWorker(i int, reply *JobReply, m *Master) error {
+func AssignReduceJobToWorker(i int, reply *JobReply, m *Coordinator) error {
 	reply.JobType = "reduce" // "map", "reduce", "null", "exit"
 	reply.Index = i
 	m.mu.Lock()
@@ -207,7 +207,7 @@ func AssignExitJobToWorker(reply *JobReply) error {
 // It should update the master data structure appropriately.
 // If it receives something it has already gotten, ignore it
 // (or override it, whatever)
-func (m *Master) ReceiveFileLocations(args *FileLocationArgs, reply *AckReply) error {
+func (m *Coordinator) ReceiveFileLocations(args *FileLocationArgs, reply *AckReply) error {
 	m.mu.Lock()
 	m.MapFileLocations[args.Index] = args.MapFileLocations
 	m.MapTasksStatus[args.Index].Status = 2 // Complete
@@ -226,7 +226,7 @@ func (m *Master) ReceiveFileLocations(args *FileLocationArgs, reply *AckReply) e
 
 // GetNewTask ...
 // RPC to be called by worker nodes.
-func (m *Master) GetNewTask(args *NewJobArgs, reply *JobReply) error {
+func (m *Coordinator) GetNewTask(args *NewJobArgs, reply *JobReply) error {
 	// When I receive a new task request,
 
 	// First check if all jobs have completed. If so, send an exit job.
@@ -269,8 +269,8 @@ func (m *Master) GetNewTask(args *NewJobArgs, reply *JobReply) error {
 //
 // start a thread that listens for RPCs from worker.go
 //
-func (c *Coordinator) server() {
-	rpc.Register(c)
+func (m *Coordinator) server() {
+	rpc.Register(m)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
@@ -283,22 +283,22 @@ func (c *Coordinator) server() {
 }
 
 // Done ...
-// main/mrmaster.go calls Done() periodically to find out
+// main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 //
-func (m *Master) Done() bool {
+func (m *Coordinator) Done() bool {
 	// Return true if we have R completed files
 	// technically this returns true when all N map jobs and R reduce jobs have completed
 	return m.bAllJobsComplete()
 }
 
-// MakeMaster ...
-// create a Master.
-// main/mrmaster.go calls this function.
+// MakeCoordinator ...
+// create a Coordinator)
+// main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 //
-func MakeMaster(files []string, nReduce int) *Master {
-	m := Master{}
+func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	m := Coordinator{}
 	m.InputFileLocations = files
 	m.N = uint(len(files))
 	m.R = uint(nReduce)
