@@ -17,14 +17,15 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "sync/atomic"
-import "6.824/labrpc"
+import (
+	"sync"
+	"sync/atomic"
+
+	"6.824/labrpc"
+)
 
 // import "bytes"
 // import "6.824/labgob"
-
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -49,7 +50,23 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-//
+type serverID = int
+type term = uint
+
+type logEntry struct {
+	termCreated term
+	command     interface{}
+}
+
+type status = uint8
+
+const (
+	follower status = iota
+	candidate
+	leader
+)
+
+// Raft ...
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
@@ -63,6 +80,21 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// Persistent state on all servers
+	currentTerm term
+	votedFor    serverID
+	log         []logEntry
+
+	// Volatile state on all servers
+	currentStatus status // am I a leader, follower or candidate?
+	// initialised at 0. When it hits 0, all messages have timed out, start election
+	messagesReceivedBeforeTimeout int
+	commitIndex                   uint // index of highest log entry known to be committed
+	lastApplied                   uint // index of highest log entry applied to state machine
+
+	// Volatile state on leaders
+	nextIndex  []uint // for each server, index of next log entry to send to that server
+	matchIndex []uint // for each server, index of highest log entry known to be replicated on that server
 }
 
 // return currentTerm and whether this server
@@ -91,7 +123,6 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 }
 
-
 //
 // restore previously persisted state.
 //
@@ -114,7 +145,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -135,6 +165,23 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
+// AppendEntriesArgs ...
+type AppendEntriesArgs struct {
+	// 2A
+	//
+
+}
+
+// AppendEntriesReply ...
+type AppendEntriesReply struct {
+	// 2A
+
+}
+
+// AppendEntries ...
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
+}
 
 //
 // example RequestVote RPC arguments structure.
@@ -193,7 +240,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -214,7 +260,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -249,6 +294,23 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 
+		/*
+			time.Sleep(10)
+
+			if status(rf.currentStatus) == leader {
+				continue
+			}
+			elif election hasnt timed out {
+				continue
+			}
+			else {
+				reset election timeout
+				change to candidate
+				send requestvotes rpc
+				continue
+			}
+		*/
+
 	}
 }
 
@@ -277,7 +339,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
