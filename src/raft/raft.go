@@ -203,7 +203,7 @@ type AppendEntriesReply struct {
 
 // AppendEntries ...
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	DPrintf("Node %v (term %v) received AppendEntries from %v", rf.me, rf.currentTerm, args.LeaderID)
+	// DPrintf("Node %v (term %v) received AppendEntries from %v", rf.me, rf.currentTerm, args.LeaderID)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
