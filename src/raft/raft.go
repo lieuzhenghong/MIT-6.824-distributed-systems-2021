@@ -29,7 +29,7 @@ import (
 // import "bytes"
 // import "6.824/labgob"
 
-//
+// ApplyMsg ...
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -110,6 +110,7 @@ type Raft struct {
 	matchIndex []uint // for each server, index of highest log entry known to be replicated on that server
 }
 
+// GetState ...
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -162,7 +163,7 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-//
+// CondInstallSnapshot ...
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 //
@@ -173,6 +174,7 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 	return true
 }
 
+// Snapshot ...
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -224,6 +226,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 1. Reply false if term < currentTerm
+	// Do not reset the election timer (don't reset lastheardfrom)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
@@ -279,11 +282,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	DPrintf("%v (term %v) received RequestVote from %v", rf.me, rf.currentTerm, args.CandidateID)
 
-	rf.lastHeardFrom = time.Now()
-
 	// 0. If RPC request or response contains term T > current Term:
 	//    set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
+		rf.lastHeardFrom = time.Now()
 		rf.currentStatus = follower
 		// TODO Increment term and do cleanup
 		rf.currentTerm = args.Term
@@ -294,6 +296,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// 1. Reply false if term < currentTerm
+	// Do not reset election timer
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
@@ -401,7 +404,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-//
+// Start ...
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -447,7 +450,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-//
+// Kill ...
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -535,7 +538,7 @@ func (rf *Raft) ticker() {
 	}
 }
 
-//
+// Make ...
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
