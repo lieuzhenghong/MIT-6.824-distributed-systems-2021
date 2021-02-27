@@ -19,6 +19,7 @@ package raft
 
 import (
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,6 +95,7 @@ type Raft struct {
 	currentTerm term
 	votedFor    serverID
 	log         []LogEntry
+	channel     chan ApplyMsg
 
 	// Volatile state on all servers
 	currentStatus status // am I a leader, follower or candidate?
@@ -101,13 +103,13 @@ type Raft struct {
 	lastHeardFrom     time.Time     // used for election timeout
 	electionTimeout   time.Duration // used for election timeout
 	lastSentHeartbeat time.Time     // used for appendEntries
-	commitIndex       uint          // index of highest log entry known to be committed
-	lastApplied       uint          // index of highest log entry applied to state machine
+	commitIndex       int           // index of highest log entry known to be committed
+	lastApplied       int           // index of highest log entry applied to state machine
 	votesReceived     []serverID
 
 	// Volatile state on leaders
-	nextIndex  []uint // for each server, index of next log entry to send to that server
-	matchIndex []uint // for each server, index of highest log entry known to be replicated on that server
+	nextIndex  []int // for each server, index of next log entry to send to that server
+	matchIndex []int // for each server, index of highest log entry known to be replicated on that server
 }
 
 // GetState ...
@@ -190,10 +192,10 @@ type AppendEntriesArgs struct {
 	//
 	Term         term
 	LeaderID     int
-	PrevLogIndex uint
+	PrevLogIndex int
 	PrevLogTerm  int
 	Entries      []LogEntry
-	LeaderCommit uint
+	LeaderCommit int
 }
 
 // AppendEntriesReply ...
@@ -205,7 +207,9 @@ type AppendEntriesReply struct {
 
 // AppendEntries ...
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// DPrintf("Node %v (term %v) received AppendEntries from %v", rf.me, rf.currentTerm, args.LeaderID)
+	DPrintf("Node %v (term %v) received AppendEntries of value %v from %v", rf.me, rf.currentTerm,
+		args,
+		args.LeaderID)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -229,8 +233,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.votesReceived = []serverID{}
-		rf.nextIndex = []uint{}
-		rf.matchIndex = []uint{}
+		rf.nextIndex = []int{}
+		rf.matchIndex = []int{}
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex
@@ -239,7 +243,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 2.1. If log doesn't contain an entry at prevLogIndex, reply false
 	// TODO assert here that args.PrevLogIndex >= 0
-	if uint(len(rf.log)-1) < args.PrevLogIndex {
+	if len(rf.log)-1 < args.PrevLogIndex {
+		DPrintf("AppendEntry failed due to prevLogIndex not match")
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
@@ -247,7 +252,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 2.2. If log does contain an entry at prevLogIndex but prevLogTerm does not match,
 	//      reply false.
-	if len(rf.log) > 0 && uint(len(rf.log)-1) >= args.PrevLogIndex && rf.log[len(rf.log)-1].TermCreated != args.PrevLogTerm {
+	if len(rf.log) > 0 &&
+		len(rf.log)-1 >= args.PrevLogIndex &&
+		rf.log[len(rf.log)-1].TermCreated != args.PrevLogTerm {
+		DPrintf("AppendEntry failed due to prevLogTerm %v not matching termCreated %v",
+			args.PrevLogTerm,
+			rf.log[len(rf.log)-1].TermCreated,
+		)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
@@ -263,7 +274,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// delete the existing entry and all that follow it
 	truncateEntries := false
 	// 4. Append any new entries not already in the log
-	lastIndex := -1
+	lastNewEntryIndex := rf.commitIndex
 
 	for i, entry := range args.Entries {
 		logIndex := int(args.PrevLogIndex) + i + 1
@@ -280,23 +291,37 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.log[logIndex] = entry
 		}
-		lastIndex = logIndex
+		lastNewEntryIndex = logIndex
 	}
 
 	// ONLY If we had a conflicting log entry do we truncate all entries after logIndex
 	// lastIndex is the last entry in the log
 	if truncateEntries {
-		rf.log = rf.log[0 : lastIndex+1]
+		rf.log = rf.log[0 : lastNewEntryIndex+1]
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex =
 	// min(leaderCommit, index of last new entry)
+	// FIXME way too complicated
 
 	if args.LeaderCommit > rf.commitIndex {
-		if args.LeaderCommit < uint(lastIndex) {
+		// If there were no new entries, just update rf.commitIndex to the leader's commitIndex
+		if len(args.Entries) == 0 {
 			rf.commitIndex = args.LeaderCommit
+			rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: int(rf.commitIndex)}
+			DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
+		} else {
+			if args.LeaderCommit < lastNewEntryIndex {
+				rf.commitIndex = args.LeaderCommit
+				rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: int(rf.commitIndex)}
+				DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
+			}
+			if args.LeaderCommit >= lastNewEntryIndex && rf.commitIndex != lastNewEntryIndex {
+				rf.commitIndex = lastNewEntryIndex
+				rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: int(rf.commitIndex)}
+				DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
+			}
 		}
-		rf.commitIndex = uint(lastIndex)
 	}
 
 	// Success reply
@@ -321,6 +346,13 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// and matchIndex for follower
 	args.Term = rf.currentTerm
 	args.LeaderID = rf.me
+	args.PrevLogIndex = rf.nextIndex[server] - 1
+	args.PrevLogTerm = rf.log[rf.nextIndex[server]-1].TermCreated
+	if len(rf.log)-1 >= rf.nextIndex[server] {
+		args.Entries = rf.log[rf.nextIndex[server]:]
+	}
+	args.LeaderCommit = rf.commitIndex
+	DPrintf("Node %v (term %v) AppendEntries args: %v", rf.me, rf.currentTerm, args)
 	rf.mu.Unlock()
 
 	// This call is blocking
@@ -340,8 +372,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.votesReceived = []serverID{}
-		rf.nextIndex = []uint{}
-		rf.matchIndex = []uint{}
+		rf.nextIndex = []int{}
+		rf.matchIndex = []int{}
 		return ok
 	}
 
@@ -360,33 +392,71 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// decrement nextIndex and retry.
 	if reply.Term == rf.currentTerm && !reply.Success {
 		// TODO assert that rf.nextIndex[server] > 0
+		DPrintf("Node %v (term %v) AppendEntries failed due to log inconsistency", rf.me, rf.currentTerm)
 		rf.nextIndex[server]--
 	}
 
 	// If successful: update nextIndex and matchIndex for follower.
 
 	if reply.Term == rf.currentTerm && reply.Success {
-		rf.matchIndex[server] = args.PrevLogIndex + uint(len(args.Entries))
+		rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
+		DPrintf("Node %v (term %v) got a successful AppendEntries reply from %v and updated matchIndex[%v] to %v. New matchIndex: %v",
+			rf.me,
+			rf.currentTerm,
+			server,
+			server,
+			rf.matchIndex[server],
+			rf.matchIndex)
 	}
 
 	// Point 4: If there exists an N such that N > commitIndex,
 	// a majority of matchIndex[i] >= N, and
 	// log[N].term == currentTerm:
 	// set commitIndex = N
-
 	// Why do we need to check log[N].term == currentTerm?
-	// A leader is not
-	// allowed to update commitIndex to somewhere in a previous term (or, for
-	// that matter, a future term). Thus, as the rule says, you specifically
+	// A leader is not allowed to update commitIndex to somewhere in a previous term
+	// (or, for that matter, a future term). Thus, as the rule says, you specifically
 	// need to check that log[N].term == currentTerm. This is because Raft
 	// leaders cannot be sure an entry is actually committed (and will not ever
 	// be changed in the future) if it’s not from their current term. This is
 	// illustrated by Figure 8 in the paper.
 
+	N := maxMajority(rf.matchIndex)
+	DPrintf("Node %v (term %v) N: %v", rf.me, rf.currentTerm, N)
+	for i := N; i > rf.commitIndex; i-- {
+		if rf.log[N].TermCreated == rf.currentTerm {
+			rf.commitIndex = N
+			DPrintf("Node %v (term %v) successfully updated commitIndex to %v", rf.me, rf.currentTerm, rf.commitIndex)
+			break
+		}
+	}
+
 	// We may or may not want to apply the successful committed log entry here.
+	// TODO move this into a separate goroutine with a condition variable
+
+	rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: rf.commitIndex}
+	DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
 
 	return ok
+}
+
+// Returns the maximum value V where a majority of the values in the slice >= V.
+// Implementation: simply sort the array, then take the median value.
+// e.g. if [3,4,7,6,7], sorted => [3,4,6,7,7], median value is 6
+func maxMajority(slice []int) int {
+	var majority int
+	// Bernard points out that I can just do majority := (len(slice)-1) / 2
+	if len(slice)%2 == 0 {
+		majority = len(slice)/2 - 1
+	} else {
+		majority = len(slice) / 2
+	}
+	tmp := make([]int, len(slice))
+	copy(tmp, slice)
+	DPrintf("%v", slice)
+	sort.Slice(tmp, func(i int, j int) bool { return i < j })
+	return tmp[majority]
 }
 
 // RequestVoteArgs ...
@@ -397,7 +467,7 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         term
 	CandidateID  int
-	LastLogIndex uint
+	LastLogIndex int
 	LastLogTerm  term
 }
 
@@ -429,8 +499,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
 		rf.votesReceived = []serverID{}
-		rf.nextIndex = []uint{}
-		rf.matchIndex = []uint{}
+		rf.nextIndex = []int{}
+		rf.matchIndex = []int{}
 	}
 
 	// 1. Reply false if term < currentTerm
@@ -470,7 +540,7 @@ func (rf *Raft) logAtLeastUpToDate(args *RequestVoteArgs) bool {
 	if args.LastLogTerm < rf.log[len(rf.log)-1].TermCreated {
 		return true
 	}
-	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex >= uint(len(rf.log)-1) {
+	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex >= int(len(rf.log)-1) {
 		return true
 	}
 	return false
@@ -520,8 +590,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
 			rf.votesReceived = []serverID{}
-			rf.nextIndex = []uint{}
-			rf.matchIndex = []uint{}
+			rf.nextIndex = []int{}
+			rf.matchIndex = []int{}
 			return ok
 		}
 		// check if my own request has expired
@@ -534,13 +604,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			if len(rf.votesReceived) > len(rf.peers)/2 {
 				// Change to leader
 				rf.currentStatus = leader
-				rf.nextIndex = []uint{}
-				rf.matchIndex = []uint{}
+				rf.nextIndex = []int{}
+				rf.matchIndex = []int{}
 				for i, _ := range rf.peers {
-					rf.nextIndex = append(rf.nextIndex, uint(len(rf.log)))
-					rf.matchIndex = append(rf.nextIndex, 0)
+					rf.nextIndex = append(rf.nextIndex, (len(rf.log)))
+					rf.matchIndex = append(rf.matchIndex, 0)
 					if i == rf.me {
-						rf.matchIndex[i] = uint(len(rf.log))
+						rf.matchIndex[i] = (len(rf.log))
 					}
 				}
 
@@ -591,6 +661,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	if isLeader {
 		rf.log = append(rf.log, LogEntry{term, command})
+		rf.matchIndex[rf.me] = len(rf.log) - 1
 	}
 
 	return index, term, isLeader
@@ -700,12 +771,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.channel = applyCh
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.currentStatus = follower
 	rf.lastHeardFrom = time.Now()
 	rf.electionTimeout = time.Duration(minElectionTimeoutMS+rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS)) * time.Millisecond
-	rf.log = append(rf.log, LogEntry{-1, -1})
+	rf.log = append(rf.log, LogEntry{0, -1})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
