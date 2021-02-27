@@ -320,14 +320,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) logAtLeastUpToDate(args *RequestVoteArgs) bool {
-	// Checks if the
+	// Checks if the log in RequestVote is at least as up to date as yours.
+	// Returns true if their log is as up-to-date as yours,
+	// otherwise returns false.
 	if len(rf.log) == 0 {
 		return true
 	}
 	if args.LastLogTerm < rf.log[len(rf.log)-1].TermCreated {
 		return true
 	}
-	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex <= uint(len(rf.log)-1) {
+	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex >= uint(len(rf.log)-1) {
 		return true
 	}
 	return false
