@@ -216,8 +216,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term >= rf.currentTerm {
 		rf.currentStatus = follower
 		// TODO Increment term and do cleanup
+		// What cleanup exactly?
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.votesReceived = []serverID{}
+		rf.nextIndex = []uint{}
+		rf.matchIndex = []uint{}
 	}
 
 	// 1. Reply false if term < currentTerm
@@ -281,6 +285,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// TODO Increment term and do cleanup
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.votesReceived = []serverID{}
+		rf.nextIndex = []uint{}
+		rf.matchIndex = []uint{}
 	}
 
 	// 1. Reply false if term < currentTerm
@@ -291,14 +298,34 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// TODO fill this in : check if logs are "at least as up to date"
+	// "Raft determines which of two logs is more up-to-date
+	// by comparing the index and term of the last entries in the logs.
+	// If the logs have last entries with different terms,
+	// then the log with the later term is more up-to-date.
+	// If the logs end with the same term, then whichever log is longer
+	// is more up to date.
 	reply.Term = rf.currentTerm
-	if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && true {
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && rf.logAtLeastUpToDate(args) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 	} else {
 		reply.VoteGranted = false
 	}
 	return
+}
+
+func (rf *Raft) logAtLeastUpToDate(args *RequestVoteArgs) bool {
+	// Checks if the
+	if len(rf.log) == 0 {
+		return true
+	}
+	if args.LastLogTerm < rf.log[len(rf.log)-1].TermCreated {
+		return true
+	}
+	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex <= uint(len(rf.log)-1) {
+		return true
+	}
+	return false
 }
 
 //
@@ -344,11 +371,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			// TODO Increment term and do cleanup
 			rf.currentTerm = args.Term
 			rf.votedFor = -1
+			rf.votesReceived = []serverID{}
+			rf.nextIndex = []uint{}
+			rf.matchIndex = []uint{}
 			return ok
 		}
 		// check if my own request has expired
 		// Thanks to Liang Jun for pointing this out
-		if args.Term < rf.currentTerm { // reply.Term also works
+		if args.Term < rf.currentTerm { // reply.Term < rf.currentTerm also works
 			return ok
 		}
 		if reply.VoteGranted {
@@ -388,7 +418,29 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (2B).
+	// command is actually an int
+	isLeader = rf.currentStatus == leader
+
+	// FIXME is this actually true?
+	// do you use makeIndex instead?
+	index = int(len(rf.log) + 1)
+	term = rf.currentTerm
+
+	// We should return right away,
+	// then start the agreement.
+	// If we are the leader, we should try and
+	// append entry to local log.
+	// Even though the paper says
+	// "respond after entry applied to state machine (§5.3)",
+	// here we return immediately.
+
+	if isLeader {
+		// TODO
+		rf.log = append(rf.log, LogEntry{term, command})
+	}
 
 	return index, term, isLeader
 }
@@ -442,7 +494,6 @@ func (rf *Raft) ticker() {
 				rf.lastHeardFrom = time.Now()
 				// increment term, start again
 				rf.currentTerm++
-				// TODO don't hardcode 150
 				rf.electionTimeout = time.Duration(minElectionTimeoutMS+rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS)) * time.Millisecond
 				rf.votedFor = rf.me
 				rf.votesReceived = append(rf.votesReceived, rf.me)
@@ -462,7 +513,6 @@ func (rf *Raft) ticker() {
 		}
 		if status(rf.currentStatus) == leader {
 			// Don't care about election timer just keep sending
-			// TODO: call heartbeat (send empty AppendEntries)
 			if rf.lastSentHeartbeat.Add(time.Duration(timeBetweenHeartBeatsMS) * time.Millisecond).Before(time.Now()) {
 				for i := range rf.peers {
 					if i == rf.me {
