@@ -207,13 +207,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	rf.lastHeardFrom = time.Now()
-
 	// 0. If RPC request or response contains term T > current Term:
 	//    set currentTerm = T, convert to follower
 	// Note that if you receive an AppendEntries in the same term,
 	// it's safe to demote to follower
 	if args.Term >= rf.currentTerm {
+		rf.lastHeardFrom = time.Now()
 		rf.currentStatus = follower
 		// TODO Increment term and do cleanup
 		// What cleanup exactly?
@@ -233,6 +232,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 2. TODO reply false if log doesn't contain an entry at prevLogIndex
 	// whose term matches prevLogTerm
+
+	// 2.1. If log doesn't contain an entry at prevLogIndex.
+
+	// 2.2. If log does contain an entry at prevLogIndex but term does not match
 
 	// 3. If an existing entry conflicts with a new one,
 	// (same index but different terms),
@@ -257,7 +260,7 @@ type RequestVoteArgs struct {
 	LastLogTerm  term
 }
 
-//
+// RequestVoteReply ...
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 //
@@ -267,7 +270,7 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-//
+// RequestVote ...
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -297,7 +300,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	// TODO fill this in : check if logs are "at least as up to date"
 	// "Raft determines which of two logs is more up-to-date
 	// by comparing the index and term of the last entries in the logs.
 	// If the logs have last entries with different terms,
