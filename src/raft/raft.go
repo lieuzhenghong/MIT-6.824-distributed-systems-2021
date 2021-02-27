@@ -306,6 +306,89 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 }
 
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	// SendAppendEntries cannot block!
+	// This is because it will result in a deadlock if you lock the whole function.
+	// So what you need to do is quickly lock to read the data
+	// and update args.
+
+	// Then once you receive, wait and grab the lock again,
+	// and handle the mutation
+
+	rf.mu.Lock()
+	// Leaders point 3: If last log index >= nextIndex for a follower:
+	// send AppendEntries RPC with log entries starting at nextIndex
+	// and matchIndex for follower
+	args.Term = rf.currentTerm
+	args.LeaderID = rf.me
+	rf.mu.Unlock()
+
+	// This call is blocking
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+
+	// Wait for a result, then come back to this thread...
+	// and grab the lock again
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// If AppendEntries fails because my term is less than the node's term,
+	// immediately convert to follower and clean up.
+	if reply.Term > rf.currentTerm {
+		// convert to follower
+		rf.currentStatus = follower
+		// TODO Increment term and do cleanup
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.votesReceived = []serverID{}
+		rf.nextIndex = []uint{}
+		rf.matchIndex = []uint{}
+		return ok
+	}
+
+	// If AppendEntries fails because my own request has expired,
+	// (request term < current term), ignore it
+	if args.Term < rf.currentTerm { // reply.Term < rf.currentTerm also works
+		return ok
+	}
+
+	// Also, if I am no longer a leader: ignore it.
+	if status(rf.currentStatus) != leader {
+		return ok
+	}
+
+	// If AppendEntries fails because of log inconsistency:
+	// decrement nextIndex and retry.
+	if reply.Term == rf.currentTerm && !reply.Success {
+		// TODO assert that rf.nextIndex[server] > 0
+		rf.nextIndex[server]--
+	}
+
+	// If successful: update nextIndex and matchIndex for follower.
+
+	if reply.Term == rf.currentTerm && reply.Success {
+		rf.matchIndex[server] = args.PrevLogIndex + uint(len(args.Entries))
+		rf.nextIndex[server] = rf.matchIndex[server] + 1
+	}
+
+	// Point 4: If there exists an N such that N > commitIndex,
+	// a majority of matchIndex[i] >= N, and
+	// log[N].term == currentTerm:
+	// set commitIndex = N
+
+	// Why do we need to check log[N].term == currentTerm?
+	// A leader is not
+	// allowed to update commitIndex to somewhere in a previous term (or, for
+	// that matter, a future term). Thus, as the rule says, you specifically
+	// need to check that log[N].term == currentTerm. This is because Raft
+	// leaders cannot be sure an entry is actually committed (and will not ever
+	// be changed in the future) if it’s not from their current term. This is
+	// illustrated by Figure 8 in the paper.
+
+	// We may or may not want to apply the successful committed log entry here.
+
+	return ok
+}
+
 // RequestVoteArgs ...
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -466,89 +549,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		}
 	}
 	// TODO handle not OK??
-	return ok
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	// SendAppendEntries cannot block!
-	// This is because it will result in a deadlock if you lock the whole function.
-	// So what you need to do is quickly lock to read the data
-	// and update args.
-
-	// Then once you receive, wait and grab the lock again,
-	// and handle the mutation
-
-	rf.mu.Lock()
-	// Leaders point 3: If last log index >= nextIndex for a follower:
-	// send AppendEntries RPC with log entries starting at nextIndex
-	// and matchIndex for follower
-	args.Term = rf.currentTerm
-	args.LeaderID = rf.me
-	rf.mu.Unlock()
-
-	// This call is blocking
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-
-	// Wait for a result, then come back to this thread...
-	// and grab the lock again
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	// If AppendEntries fails because my term is less than the node's term,
-	// immediately convert to follower and clean up.
-	if reply.Term > rf.currentTerm {
-		// convert to follower
-		rf.currentStatus = follower
-		// TODO Increment term and do cleanup
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.votesReceived = []serverID{}
-		rf.nextIndex = []uint{}
-		rf.matchIndex = []uint{}
-		return ok
-	}
-
-	// If AppendEntries fails because my own request has expired,
-	// (request term < current term), ignore it
-	if args.Term < rf.currentTerm { // reply.Term < rf.currentTerm also works
-		return ok
-	}
-
-	// Also, if I am no longer a leader: ignore it.
-	if status(rf.currentStatus) != leader {
-		return ok
-	}
-
-	// If AppendEntries fails because of log inconsistency:
-	// decrement nextIndex and retry.
-	if reply.Term == rf.currentTerm && !reply.Success {
-		// TODO assert that rf.nextIndex[server] > 0
-		rf.nextIndex[server]--
-	}
-
-	// If successful: update nextIndex and matchIndex for follower.
-
-	if reply.Term == rf.currentTerm && reply.Success {
-		rf.matchIndex[server] = args.PrevLogIndex + uint(len(args.Entries))
-		rf.nextIndex[server] = rf.matchIndex[server] + 1
-	}
-
-	// Point 4: If there exists an N such that N > commitIndex,
-	// a majority of matchIndex[i] >= N, and
-	// log[N].term == currentTerm:
-	// set commitIndex = N
-
-	// Why do we need to check log[N].term == currentTerm?
-	// A leader is not
-	// allowed to update commitIndex to somewhere in a previous term (or, for
-	// that matter, a future term). Thus, as the rule says, you specifically
-	// need to check that log[N].term == currentTerm. This is because Raft
-	// leaders cannot be sure an entry is actually committed (and will not ever
-	// be changed in the future) if it’s not from their current term. This is
-	// illustrated by Figure 8 in the paper.
-
-	// We may or may not want to apply the successful committed log entry here.
-
 	return ok
 }
 
