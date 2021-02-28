@@ -297,6 +297,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// ONLY If we had a conflicting log entry do we truncate all entries after logIndex
 	// lastIndex is the last entry in the log
 	if truncateEntries {
+		DPrintf("Truncating entries...")
 		rf.log = rf.log[0 : lastNewEntryIndex+1]
 	}
 
@@ -304,6 +305,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 5.1 If this is an empty AppendEntries, just update commitIndex to leaderCommit
 
+	// FIXME this is wrong. Think about what LJ said
+	// Also, if commitIndex == 0, we don't want to apply it
 	if args.LeaderCommit > rf.commitIndex && len(args.Entries) == 0 {
 		rf.commitIndex = args.LeaderCommit
 		rf.channel <- ApplyMsg{
@@ -661,7 +664,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = status(rf.currentStatus) == leader
 
 	// FIXME flag out check whether this is correct index
-	index = int(len(rf.log) + 1)
+	index = len(rf.log)
+	// DPrintf("Index: %v", index)
 	term = rf.currentTerm
 
 	// We should return right away,
@@ -791,6 +795,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeardFrom = time.Now()
 	rf.electionTimeout = time.Duration(minElectionTimeoutMS+rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS)) * time.Millisecond
 	rf.log = append(rf.log, LogEntry{0, -1})
+	/*
+		rf.channel <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[rf.commitIndex].Command,
+			CommandIndex: rf.commitIndex,
+		}
+	*/
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
