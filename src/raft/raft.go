@@ -106,6 +106,7 @@ type Raft struct {
 	commitIndex       int           // index of highest log entry known to be committed
 	lastApplied       int           // index of highest log entry applied to state machine
 	votesReceived     []serverID
+	lastNewEntryIndex int // index of last new entry, updated whenever entries are appended
 
 	// Volatile state on leaders
 	nextIndex  []int // for each server, index of next log entry to send to that server
@@ -274,7 +275,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// delete the existing entry and all that follow it
 	truncateEntries := false
 	// 4. Append any new entries not already in the log
-	lastNewEntryIndex := -1
 
 	for i, entry := range args.Entries {
 		logIndex := int(args.PrevLogIndex) + i + 1
@@ -291,24 +291,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.log[logIndex] = entry
 		}
-		lastNewEntryIndex = logIndex
+		rf.lastNewEntryIndex = logIndex
 	}
 
 	// ONLY If we had a conflicting log entry do we truncate all entries after logIndex
 	// lastIndex is the last entry in the log
 	if truncateEntries {
 		DPrintf("Truncating entries...")
-		rf.log = rf.log[0 : lastNewEntryIndex+1]
+		rf.log = rf.log[0 : rf.lastNewEntryIndex+1]
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 
-	// 5.1 If this is an empty AppendEntries, just update commitIndex to leaderCommit
-
-	// FIXME this is wrong. Think about what LJ said
-	// Also, if commitIndex == 0, we don't want to apply it
+	// 5.1 If this is an empty AppendEntries, just update commitIndex to lastNewEntryIndex
 	if args.LeaderCommit > rf.commitIndex && len(args.Entries) == 0 {
-		rf.commitIndex = args.LeaderCommit
+		rf.commitIndex = rf.lastNewEntryIndex
 		rf.channel <- ApplyMsg{
 			CommandValid: true,
 			Command:      rf.log[rf.commitIndex].Command,
@@ -319,13 +316,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 5.2 If this is not an empty AppendEntries, take the minimum of args.LeaderCommit and lastNewEntryIndex
 
-	if args.LeaderCommit > rf.commitIndex {
+	if args.LeaderCommit > rf.commitIndex && len(args.Entries) > 0 {
 		// assert lastNewEntryIndex != -1
-		if args.LeaderCommit < lastNewEntryIndex {
+		if args.LeaderCommit < rf.lastNewEntryIndex {
 			rf.commitIndex = args.LeaderCommit
 		}
-		if args.LeaderCommit >= lastNewEntryIndex {
-			rf.commitIndex = lastNewEntryIndex
+		if args.LeaderCommit >= rf.lastNewEntryIndex {
+			rf.commitIndex = rf.lastNewEntryIndex
 		}
 		rf.channel <- ApplyMsg{
 			CommandValid: true,
@@ -436,22 +433,28 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	N := maxMajority(rf.matchIndex)
 	DPrintf("Node %v (term %v) N: %v, matchIndex: %v", rf.me, rf.currentTerm, N, rf.matchIndex)
 	for i := N; i > rf.commitIndex; i-- {
+		if i == 0 {
+			break
+		}
 		if rf.log[N].TermCreated == rf.currentTerm {
 			rf.commitIndex = N
 			DPrintf("Node %v (term %v) successfully updated commitIndex to %v", rf.me, rf.currentTerm, rf.commitIndex)
+			rf.channel <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[int(rf.commitIndex)].Command,
+				CommandIndex: rf.commitIndex,
+			}
+			// We may or may not want to apply the successful committed log entry here.
+			// TODO move this into a separate goroutine with a condition variable
+			DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v",
+				rf.me,
+				rf.currentTerm,
+				rf.commitIndex,
+				rf.log,
+			)
 			break
 		}
 	}
-
-	// We may or may not want to apply the successful committed log entry here.
-	// TODO move this into a separate goroutine with a condition variable
-
-	rf.channel <- ApplyMsg{
-		CommandValid: true,
-		Command:      rf.log[int(rf.commitIndex)].Command,
-		CommandIndex: rf.commitIndex,
-	}
-	DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
 
 	return ok
 }
