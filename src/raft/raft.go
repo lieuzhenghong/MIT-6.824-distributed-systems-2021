@@ -274,7 +274,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// delete the existing entry and all that follow it
 	truncateEntries := false
 	// 4. Append any new entries not already in the log
-	lastNewEntryIndex := rf.commitIndex
+	lastNewEntryIndex := -1
 
 	for i, entry := range args.Entries {
 		logIndex := int(args.PrevLogIndex) + i + 1
@@ -300,28 +300,36 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.log = rf.log[0 : lastNewEntryIndex+1]
 	}
 
-	// 5. If leaderCommit > commitIndex, set commitIndex =
-	// min(leaderCommit, index of last new entry)
-	// FIXME way too complicated
+	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+
+	// 5.1 If this is an empty AppendEntries, just update commitIndex to leaderCommit
+
+	if args.LeaderCommit > rf.commitIndex && len(args.Entries) == 0 {
+		rf.commitIndex = args.LeaderCommit
+		rf.channel <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[rf.commitIndex].Command,
+			CommandIndex: rf.commitIndex,
+		}
+		DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
+	}
+
+	// 5.2 If this is not an empty AppendEntries, take the minimum of args.LeaderCommit and lastNewEntryIndex
 
 	if args.LeaderCommit > rf.commitIndex {
-		// If there were no new entries, just update rf.commitIndex to the leader's commitIndex
-		if len(args.Entries) == 0 {
+		// assert lastNewEntryIndex != -1
+		if args.LeaderCommit < lastNewEntryIndex {
 			rf.commitIndex = args.LeaderCommit
-			rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: int(rf.commitIndex)}
-			DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
-		} else {
-			if args.LeaderCommit < lastNewEntryIndex {
-				rf.commitIndex = args.LeaderCommit
-				rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: int(rf.commitIndex)}
-				DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
-			}
-			if args.LeaderCommit >= lastNewEntryIndex && rf.commitIndex != lastNewEntryIndex {
-				rf.commitIndex = lastNewEntryIndex
-				rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: int(rf.commitIndex)}
-				DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
-			}
 		}
+		if args.LeaderCommit >= lastNewEntryIndex {
+			rf.commitIndex = lastNewEntryIndex
+		}
+		rf.channel <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[rf.commitIndex].Command,
+			CommandIndex: rf.commitIndex,
+		}
+		DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
 	}
 
 	// Success reply
@@ -423,7 +431,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// illustrated by Figure 8 in the paper.
 
 	N := maxMajority(rf.matchIndex)
-	DPrintf("Node %v (term %v) N: %v", rf.me, rf.currentTerm, N)
+	DPrintf("Node %v (term %v) N: %v, matchIndex: %v", rf.me, rf.currentTerm, N, rf.matchIndex)
 	for i := N; i > rf.commitIndex; i-- {
 		if rf.log[N].TermCreated == rf.currentTerm {
 			rf.commitIndex = N
@@ -435,7 +443,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// We may or may not want to apply the successful committed log entry here.
 	// TODO move this into a separate goroutine with a condition variable
 
-	rf.channel <- ApplyMsg{CommandValid: true, Command: rf.log[int(rf.commitIndex)].Command, CommandIndex: rf.commitIndex}
+	rf.channel <- ApplyMsg{
+		CommandValid: true,
+		Command:      rf.log[int(rf.commitIndex)].Command,
+		CommandIndex: rf.commitIndex,
+	}
 	DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
 
 	return ok
@@ -454,8 +466,9 @@ func maxMajority(slice []int) int {
 	}
 	tmp := make([]int, len(slice))
 	copy(tmp, slice)
-	DPrintf("%v", slice)
-	sort.Slice(tmp, func(i int, j int) bool { return i < j })
+	DPrintf("%v, %v", tmp, slice)
+	sort.Slice(tmp, func(i int, j int) bool { return tmp[i] < tmp[j] })
+	DPrintf("%v, %v", tmp, slice)
 	return tmp[majority]
 }
 
