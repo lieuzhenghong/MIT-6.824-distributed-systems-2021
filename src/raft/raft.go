@@ -206,6 +206,14 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
+func (rf *Raft) cleanup() {
+	rf.votedFor = -1
+	rf.votesReceived = []serverID{}
+	rf.nextIndex = []int{}
+	rf.matchIndex = []int{}
+	rf.lastNewEntryIndex = 0
+}
+
 // AppendEntries ...
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	DPrintf("Node %v (term %v) received AppendEntries of value %v from %v", rf.me, rf.currentTerm,
@@ -227,15 +235,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Note that if you receive an AppendEntries in the same term,
 	// it's safe to demote to follower
 	if args.Term >= rf.currentTerm {
+
+		DPrintf("Node %v (term %v) demoting to follower", rf.me, rf.currentTerm)
 		rf.lastHeardFrom = time.Now()
 		rf.currentStatus = follower
+		rf.currentTerm = args.Term
 		// TODO Increment term and do cleanup
 		// What cleanup exactly?
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.votesReceived = []serverID{}
-		rf.nextIndex = []int{}
-		rf.matchIndex = []int{}
+		rf.cleanup()
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex
@@ -304,20 +311,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 
 	// 5.1 If this is an empty AppendEntries, just update commitIndex to lastNewEntryIndex
-	if args.LeaderCommit > rf.commitIndex && len(args.Entries) == 0 {
-		rf.commitIndex = rf.lastNewEntryIndex
-		rf.channel <- ApplyMsg{
-			CommandValid: true,
-			Command:      rf.log[rf.commitIndex].Command,
-			CommandIndex: rf.commitIndex,
-		}
-		DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
-	}
-
-	// 5.2 If this is not an empty AppendEntries, take the minimum of args.LeaderCommit and lastNewEntryIndex
-
-	if args.LeaderCommit > rf.commitIndex && len(args.Entries) > 0 {
-		// assert lastNewEntryIndex != -1
+	if args.LeaderCommit > rf.commitIndex && rf.lastNewEntryIndex != 0 {
 		if args.LeaderCommit < rf.lastNewEntryIndex {
 			rf.commitIndex = args.LeaderCommit
 		}
@@ -349,6 +343,20 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// and handle the mutation
 
 	rf.mu.Lock()
+
+	// First, check if you're a leader.
+	// If you are not a leader, skip everything.
+	// If you don't have this check, what could happen is that
+	// you become a leader in some previous term, then you step down
+	// and you clean up all your stuff--thus resetting rf.nextIndex--
+	// but this sendAppendEntries is queued.
+	// When it eventually gets to here,
+	// it tries to access rf.nextIndex[server]--which is now an empty array,
+	// thus throwing an IndexError panic.
+	if status(rf.currentStatus) != leader {
+		return false
+	}
+
 	// Leaders point 3: If last log index >= nextIndex for a follower:
 	// send AppendEntries RPC with log entries starting at nextIndex
 	// and matchIndex for follower
@@ -376,12 +384,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	if reply.Term > rf.currentTerm {
 		// convert to follower
 		rf.currentStatus = follower
-		// TODO Increment term and do cleanup
 		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.votesReceived = []serverID{}
-		rf.nextIndex = []int{}
-		rf.matchIndex = []int{}
+		// TODO Increment term and do cleanup
+		rf.cleanup()
 		return ok
 	}
 
@@ -514,12 +519,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm {
 		rf.lastHeardFrom = time.Now()
 		rf.currentStatus = follower
-		// TODO Increment term and do cleanup
 		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.votesReceived = []serverID{}
-		rf.nextIndex = []int{}
-		rf.matchIndex = []int{}
+		// TODO Increment term and do cleanup
+		rf.cleanup()
 	}
 
 	// 1. Reply false if term < currentTerm
@@ -605,12 +607,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		if reply.Term > rf.currentTerm {
 			// convert to follower
 			rf.currentStatus = follower
-			// TODO Increment term and do cleanup
 			rf.currentTerm = args.Term
-			rf.votedFor = -1
-			rf.votesReceived = []serverID{}
-			rf.nextIndex = []int{}
-			rf.matchIndex = []int{}
+			rf.cleanup()
 			return ok
 		}
 		// check if my own request has expired
@@ -633,7 +631,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 					}
 				}
 
-				DPrintf("%v has become the leader in term %v!", rf.me, rf.currentTerm)
+				DPrintf("%v has become the leader in term %v! nextIndex: %v, matchIndex: %v",
+					rf.me,
+					rf.currentTerm,
+					rf.nextIndex,
+					rf.matchIndex,
+				)
 			}
 		}
 	}
