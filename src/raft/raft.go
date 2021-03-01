@@ -234,15 +234,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// set currentTerm = T, convert to follower
 	// Note that if you receive an AppendEntries in the same term,
 	// it's safe to demote to follower
-	if args.Term >= rf.currentTerm {
-
+	if args.Term > rf.currentTerm {
 		DPrintf("Node %v (term %v) demoting to follower", rf.me, rf.currentTerm)
 		rf.lastHeardFrom = time.Now()
 		rf.currentStatus = follower
-		rf.currentTerm = args.Term
 		// TODO Increment term and do cleanup
-		// What cleanup exactly?
+		rf.currentTerm = args.Term
 		rf.cleanup()
+	}
+
+	if args.Term == rf.currentTerm {
+		rf.lastHeardFrom = time.Now()
+		rf.currentStatus = follower
 	}
 
 	// 2. Reply false if log doesn't contain an entry at prevLogIndex
@@ -283,6 +286,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	truncateEntries := false
 	// 4. Append any new entries not already in the log
 
+	DPrintf("Now iterating through new entries")
 	for i, entry := range args.Entries {
 		logIndex := int(args.PrevLogIndex) + i + 1
 		if logIndex >= len(rf.log) {
@@ -298,7 +302,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			rf.log[logIndex] = entry
 		}
+		DPrintf("LogIndex: %v", logIndex)
 		rf.lastNewEntryIndex = logIndex
+		DPrintf("rf.lastNewEntryIndex: %v", rf.lastNewEntryIndex)
 	}
 
 	// ONLY If we had a conflicting log entry do we truncate all entries after logIndex
@@ -309,9 +315,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+	DPrintf("Now updating commitIndex and possibly applying state. leaderCommit: %v, commitIndex: %v, lastNewEntryIndex: %v",
+		args.LeaderCommit,
+		rf.commitIndex,
+		rf.lastNewEntryIndex,
+	)
 
 	// 5.1 If this is an empty AppendEntries, just update commitIndex to lastNewEntryIndex
 	if args.LeaderCommit > rf.commitIndex && rf.lastNewEntryIndex != 0 {
+		DPrintf("Called")
 		if args.LeaderCommit < rf.lastNewEntryIndex {
 			rf.commitIndex = args.LeaderCommit
 		}
