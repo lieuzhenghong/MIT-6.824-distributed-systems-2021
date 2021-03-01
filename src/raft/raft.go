@@ -225,6 +225,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 1. Reply false if term < currentTerm
 	// Do not reset the election timer (don't reset lastheardfrom)
 	if args.Term < rf.currentTerm {
+		DPrintf("Node %v (term %v) rejecting AppendEntries of value %v from node %v",
+			rf.me,
+			rf.currentTerm,
+			args,
+			args.LeaderID,
+		)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
@@ -330,12 +336,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.LeaderCommit >= rf.lastNewEntryIndex {
 			rf.commitIndex = rf.lastNewEntryIndex
 		}
-		rf.channel <- ApplyMsg{
-			CommandValid: true,
-			Command:      rf.log[rf.commitIndex].Command,
-			CommandIndex: rf.commitIndex,
+
+		// Apply all entries
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			rf.channel <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[i].Command,
+				CommandIndex: i,
+			}
+			DPrintf("Node %v (term %v) successfully applied state on index %v. Current log: %v",
+				rf.me,
+				rf.currentTerm,
+				i,
+				rf.log,
+			)
 		}
-		DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v", rf.me, rf.currentTerm, rf.commitIndex, rf.log)
+		rf.lastApplied = rf.commitIndex
 	}
 
 	// Success reply
@@ -380,7 +396,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		args.Entries = rf.log[rf.nextIndex[server]:]
 	}
 	args.LeaderCommit = rf.commitIndex
-	DPrintf("Node %v (term %v) AppendEntries args: %v", rf.me, rf.currentTerm, args)
+	DPrintf("Node %v (term %v) sending server %v AppendEntries args: %v",
+		rf.me,
+		rf.currentTerm,
+		server,
+		args,
+	)
 	rf.mu.Unlock()
 
 	// This call is blocking
@@ -456,22 +477,26 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		if rf.log[N].TermCreated == rf.currentTerm {
 			rf.commitIndex = N
 			DPrintf("Node %v (term %v) successfully updated commitIndex to %v", rf.me, rf.currentTerm, rf.commitIndex)
-			rf.channel <- ApplyMsg{
-				CommandValid: true,
-				Command:      rf.log[int(rf.commitIndex)].Command,
-				CommandIndex: rf.commitIndex,
-			}
-			// We may or may not want to apply the successful committed log entry here.
-			// TODO move this into a separate goroutine with a condition variable
-			DPrintf("Node %v (term %v) successfully applied state on commitIndex %v. Current log: %v",
-				rf.me,
-				rf.currentTerm,
-				rf.commitIndex,
-				rf.log,
-			)
 			break
 		}
 	}
+
+	// Apply all entries
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		rf.channel <- ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[i].Command,
+			CommandIndex: i,
+		}
+		DPrintf("Node %v (term %v) successfully applied state on index %v. Current log: %v",
+			rf.me,
+			rf.currentTerm,
+			i,
+			rf.log,
+		)
+	}
+
+	rf.lastApplied = rf.commitIndex
 
 	return ok
 }
@@ -489,9 +514,7 @@ func maxMajority(slice []int) int {
 	}
 	tmp := make([]int, len(slice))
 	copy(tmp, slice)
-	DPrintf("%v, %v", tmp, slice)
 	sort.Slice(tmp, func(i int, j int) bool { return tmp[i] < tmp[j] })
-	DPrintf("%v, %v", tmp, slice)
 	return tmp[majority]
 }
 
@@ -552,6 +575,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// is more up to date.
 	reply.Term = rf.currentTerm
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && rf.logAtLeastUpToDate(args) {
+		DPrintf("Node %v, Term %v: I am granting my vote to %v. My log: %v. His last log index: %v. His last log term: %v",
+			rf.me,
+			rf.currentTerm,
+			args.CandidateID,
+			rf.log,
+			args.LastLogIndex,
+			args.LastLogTerm,
+		)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
 	} else {
@@ -570,10 +601,10 @@ func (rf *Raft) logAtLeastUpToDate(args *RequestVoteArgs) bool {
 	if len(rf.log) == 1 {
 		return true
 	}
-	if args.LastLogTerm < rf.log[len(rf.log)-1].TermCreated {
+	if args.LastLogTerm > rf.log[len(rf.log)-1].TermCreated {
 		return true
 	}
-	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex >= int(len(rf.log)-1) {
+	if args.LastLogTerm == rf.log[len(rf.log)-1].TermCreated && args.LastLogIndex >= len(rf.log)-1 {
 		return true
 	}
 	return false
@@ -639,7 +670,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 					rf.nextIndex = append(rf.nextIndex, (len(rf.log)))
 					rf.matchIndex = append(rf.matchIndex, 0)
 					if i == rf.me {
-						rf.matchIndex[i] = (len(rf.log))
+						rf.matchIndex[i] = (len(rf.log) - 1)
 					}
 				}
 
