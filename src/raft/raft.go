@@ -415,9 +415,15 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	// If AppendEntries fails because my term is less than the node's term,
 	// immediately convert to follower and clean up.
 	if reply.Term > rf.currentTerm {
+		DPrintf("Node %v Term %v received reply term %v from node %v, demoting to follower...",
+			rf.me,
+			rf.currentTerm,
+			server,
+			reply.Term,
+		)
 		// convert to follower
 		rf.currentStatus = follower
-		rf.currentTerm = args.Term
+		rf.currentTerm = reply.Term
 		// TODO Increment term and do cleanup
 		rf.cleanup()
 		return ok
@@ -547,7 +553,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("%v (term %v) received RequestVote from %v", rf.me, rf.currentTerm, args.CandidateID)
+	DPrintf("%v (term %v) received RequestVote from %v with term %v",
+		rf.me, rf.currentTerm, args.CandidateID, args.Term)
 
 	// 0. If RPC request or response contains term T > current Term:
 	//    set currentTerm = T, convert to follower
@@ -567,12 +574,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	// "Raft determines which of two logs is more up-to-date
-	// by comparing the index and term of the last entries in the logs.
-	// If the logs have last entries with different terms,
-	// then the log with the later term is more up-to-date.
-	// If the logs end with the same term, then whichever log is longer
-	// is more up to date.
+	// Only grant vote if other person's logs are at least as up to date as yours.
+	DPrintf("Node %v, Term %v: Checking RequestVote from node %v. I voted for: %v. My log: %v. His last log index: %v. His last log term: %v",
+		rf.me,
+		rf.currentTerm,
+		args.CandidateID,
+		rf.votedFor,
+		rf.log,
+		args.LastLogIndex,
+		args.LastLogTerm,
+	)
 	reply.Term = rf.currentTerm
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateID) && rf.logAtLeastUpToDate(args) {
 		DPrintf("Node %v, Term %v: I am granting my vote to %v. My log: %v. His last log index: %v. His last log term: %v",
@@ -595,6 +606,12 @@ func (rf *Raft) logAtLeastUpToDate(args *RequestVoteArgs) bool {
 	// Checks if the log in RequestVote is at least as up to date as yours.
 	// Returns true if their log is as up-to-date as yours,
 	// otherwise returns false.
+	// "Raft determines which of two logs is more up-to-date
+	// by comparing the index and term of the last entries in the logs.
+	// If the logs have last entries with different terms,
+	// then the log with the later term is more up-to-date.
+	// If the logs end with the same term, then whichever log is longer
+	// is more up to date.
 
 	// TODO assert here that len(rf.log) >= 1
 
@@ -754,6 +771,29 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) callForElection() {
+	// increment term, start again
+	rf.lastHeardFrom = time.Now()
+	rf.currentTerm++
+	rf.electionTimeout = time.Duration(minElectionTimeoutMS+rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS)) * time.Millisecond
+	rf.votedFor = rf.me
+	rf.votesReceived = []int{rf.me}
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go rf.sendRequestVote(i,
+			&RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateID:  rf.me,
+				LastLogIndex: len(rf.log) - 1,
+				LastLogTerm:  rf.log[len(rf.log)-1].TermCreated,
+			},
+			&RequestVoteReply{})
+
+	}
+}
+
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
@@ -772,31 +812,15 @@ func (rf *Raft) ticker() {
 			// AppendEntriesRPC or granting vote to candidate
 			// convert to candidate
 			if rf.lastHeardFrom.Add(rf.electionTimeout).Before(time.Now()) {
+				DPrintf("Node %v is becoming candidate from follower", rf.me)
+				rf.currentStatus = candidate
+				rf.callForElection()
 			}
-			rf.lastHeardFrom = time.Now()
-			rf.currentStatus = candidate
 		}
 		if status(rf.currentStatus) == candidate {
 			// If election timeout elapses: start new election
 			if rf.lastHeardFrom.Add(rf.electionTimeout).Before(time.Now()) {
-				rf.lastHeardFrom = time.Now()
-				// increment term, start again
-				rf.currentTerm++
-				rf.electionTimeout = time.Duration(minElectionTimeoutMS+rand.Intn(maxElectionTimeoutMS-minElectionTimeoutMS)) * time.Millisecond
-				rf.votedFor = rf.me
-				rf.votesReceived = append(rf.votesReceived, rf.me)
-				for i := range rf.peers {
-					if i == rf.me {
-						continue
-					}
-					go rf.sendRequestVote(i,
-						&RequestVoteArgs{
-							Term:        rf.currentTerm,
-							CandidateID: rf.me,
-						},
-						&RequestVoteReply{})
-
-				}
+				rf.callForElection()
 			}
 		}
 		if status(rf.currentStatus) == leader {
