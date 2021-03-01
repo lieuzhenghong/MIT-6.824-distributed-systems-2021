@@ -216,9 +216,12 @@ func (rf *Raft) cleanup() {
 
 // AppendEntries ...
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	DPrintf("Node %v (term %v) received AppendEntries of value %v from %v", rf.me, rf.currentTerm,
+	DPrintf("Node %v (term %v) received AppendEntries of value %v from %v",
+		rf.me,
+		rf.currentTerm,
 		args,
 		args.LeaderID)
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -292,7 +295,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	truncateEntries := false
 	// 4. Append any new entries not already in the log
 
-	DPrintf("Now iterating through new entries")
+	DPrintf("Node %v Term %v: Now iterating through new entries.",
+		rf.me,
+		rf.currentTerm,
+	)
 	for i, entry := range args.Entries {
 		logIndex := int(args.PrevLogIndex) + i + 1
 		if logIndex >= len(rf.log) {
@@ -364,45 +370,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	// SendAppendEntries cannot block!
 	// This is because it will result in a deadlock if you lock the whole function.
-	// So what you need to do is quickly lock to read the data
-	// and update args.
-
-	// Then once you receive, wait and grab the lock again,
-	// and handle the mutation
-
-	rf.mu.Lock()
-
-	// First, check if you're a leader.
-	// If you are not a leader, skip everything.
-	// If you don't have this check, what could happen is that
-	// you become a leader in some previous term, then you step down
-	// and you clean up all your stuff--thus resetting rf.nextIndex--
-	// but this sendAppendEntries is queued.
-	// When it eventually gets to here,
-	// it tries to access rf.nextIndex[server]--which is now an empty array,
-	// thus throwing an IndexError panic.
-	if status(rf.currentStatus) != leader {
-		return false
-	}
 
 	// Leaders point 3: If last log index >= nextIndex for a follower:
 	// send AppendEntries RPC with log entries starting at nextIndex
 	// and matchIndex for follower
-	args.Term = rf.currentTerm
-	args.LeaderID = rf.me
-	args.PrevLogIndex = rf.nextIndex[server] - 1
-	args.PrevLogTerm = rf.log[rf.nextIndex[server]-1].TermCreated
-	if len(rf.log)-1 >= rf.nextIndex[server] {
-		args.Entries = rf.log[rf.nextIndex[server]:]
-	}
-	args.LeaderCommit = rf.commitIndex
-	DPrintf("Node %v (term %v) sending server %v AppendEntries args: %v",
-		rf.me,
-		rf.currentTerm,
-		server,
-		args,
-	)
-	rf.mu.Unlock()
 
 	// This call is blocking
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
@@ -830,9 +801,27 @@ func (rf *Raft) ticker() {
 					if i == rf.me {
 						continue
 					}
+					argsEntries := []LogEntry{}
+					if len(rf.log)-1 >= rf.nextIndex[i] {
+						argsEntries = rf.log[rf.nextIndex[i]:]
+					}
+					args := &AppendEntriesArgs{
+						rf.currentTerm,
+						rf.me,
+						rf.nextIndex[i] - 1,
+						rf.log[rf.nextIndex[i]-1].TermCreated,
+						argsEntries,
+						rf.commitIndex,
+					}
 					go rf.sendAppendEntries(i,
-						&AppendEntriesArgs{},
+						args,
 						&AppendEntriesReply{},
+					)
+					DPrintf("Node %v (term %v) sending server %v AppendEntries args: %v",
+						rf.me,
+						rf.currentTerm,
+						i,
+						args,
 					)
 				}
 				rf.lastSentHeartbeat = time.Now()
