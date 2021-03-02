@@ -122,7 +122,6 @@ func TestManyElections2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
-	t.Skip()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -150,7 +149,6 @@ func TestBasicAgree2B(t *testing.T) {
 // each command is sent to each peer just once.
 //
 func TestRPCBytes2B(t *testing.T) {
-	t.Skip()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
