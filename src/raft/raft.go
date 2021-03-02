@@ -389,8 +389,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		DPrintf("Node %v Term %v received reply term %v from node %v, demoting to follower...",
 			rf.me,
 			rf.currentTerm,
-			server,
 			reply.Term,
+			server,
 		)
 		// convert to follower
 		rf.currentStatus = follower
@@ -530,7 +530,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 0. If RPC request or response contains term T > current Term:
 	//    set currentTerm = T, convert to follower
 	if args.Term > rf.currentTerm {
-		rf.lastHeardFrom = time.Now()
 		rf.currentStatus = follower
 		rf.currentTerm = args.Term
 		// TODO Increment term and do cleanup
@@ -566,6 +565,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			args.LastLogTerm,
 		)
 		reply.VoteGranted = true
+		rf.lastHeardFrom = time.Now()
 		rf.votedFor = args.CandidateID
 	} else {
 		reply.VoteGranted = false
